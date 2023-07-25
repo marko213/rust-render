@@ -88,7 +88,10 @@ struct Args {
     threads: i32,
 
     #[arg(short, long)]
-    animation: bool
+    animation: bool,
+
+    #[arg(short, long, default_value_t=240)]
+    frames: i32
 }
 
 fn main() {
@@ -243,9 +246,8 @@ fn main() {
 
     if args.animation {
 	// Render an animation
-	let frames = 240;
-	for f in 0..frames {
-	    let p = (f as f32) / (frames as f32);
+	for f in 0..args.frames {
+	    let p = (f as f32) / (args.frames as f32);
 	    println!("Frame {}", f);
 
 	    let cube_pos = mat![0.0, 0.9, -4.0];
