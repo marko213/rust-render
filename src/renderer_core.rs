@@ -128,7 +128,7 @@ impl Transform {
 	if z != 0.0 {
 	    let s = z.sin();
 	    let c = z.cos();
-	    t = t * mat![
+	    t = mat![
 		[  c,   s, 0.0, 0.0],
 		[ -s,   c, 0.0, 0.0],
 		[0.0, 0.0, 1.0, 0.0],

@@ -177,7 +177,7 @@ fn main() {
     });
     scene.objects.push(SceneObject::new(
 	Transform::translation(mat![0.0, 0.9, -4.0])
-	    * Transform::rotation_xyz(-PI / 4.0, -PI / 4.0, -PI / 4.0),
+	    * Transform::rotation_xyz(-PI / 4.0, PI / 4.0, -PI / 8.0),
 	cube
     ));
     let sphere = Arc::new(Sphere {
@@ -255,7 +255,7 @@ fn main() {
 	    scene.objects[1].transform =
 		Transform::translation(cube_pos) *
 		Transform::rotation_xyz(0.0, p * 4.0 * PI, 0.0) *
-		Transform::rotation_xyz(-PI / 4.0, -PI / 4.0, -PI / 4.0);
+		Transform::rotation_xyz(-PI / 4.0, PI / 4.0, -PI / 8.0);
 	    
 	    scene.objects[2].transform =
 		Transform::translation(cube_pos) *
