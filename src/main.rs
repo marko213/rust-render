@@ -39,14 +39,14 @@ impl From<&DMat<Color>> for RgbImage {
 /// Apply a (low-intensity) blur to the [`Mat`] for a bloom effect
 fn add_bloom(mat : &DMat<Color>, r : i32, c : f32) -> DMat<Color> {
     let [h, w] = mat.size;
-    let mut res = DMat::new([h, w], Color::ZERO);
+    let mut res = DMat::new([h, w], Color::zero());
 
     // The factor for the pixel at the center
     let rem = 1.0 - (((2 * r + 1) as f32).powi(2) - 1.0) * c;
     
     for y in 0..h {
 	for x in 0..w {
-	    let mut s = Color::ZERO;
+	    let mut s = Color::zero();
 	    for dy in -r..=r {
 		let ny = y as i32 + dy;
 		if ny < 0 || ny >= h as i32 {
@@ -113,7 +113,7 @@ fn main() {
     
     let gray = Arc::new(PointMaterial {
 	color: mat![0.7, 0.7, 0.7],
-	emissive: Color::ZERO,
+	emissive: Color::zero(),
 	roughness: 2.0,
 	diffuse: 1.0,
 	ior: 1.457.into()
@@ -145,10 +145,10 @@ fn main() {
     
     let silver_mirror = Arc::new(PointMaterial {
 	color: mat![0.99, 0.99, 0.99],
-	emissive: Color::ZERO,
+	emissive: Color::zero(),
 	roughness: 0.0,
 	diffuse: 1.0,
-	ior: Complex {a: 0.135, b: 3.985}
+	ior: Complex {re: 0.135, im: 3.985}
     });
     
     let ground = Arc::new(SimpleMesh {
@@ -162,7 +162,7 @@ fn main() {
 
     let red = Arc::new(PointMaterial {
 	color: mat![1.0, 0.3, 0.3],
-	emissive: Color::ZERO,
+	emissive: Color::zero(),
 	roughness: 0.3,
 	diffuse: 1.0,
 	ior: 1.55.into()

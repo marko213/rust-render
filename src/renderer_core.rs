@@ -8,9 +8,13 @@ use rand_distr::Standard;
 use std::f32::consts::PI;
 use std::collections::VecDeque;
 use std::mem::swap;
-use std::ops::{Add, Sub, Mul, Div};
+use std::ops::Mul;
 use scoped_threadpool::Pool;
 use std::any::Any;
+use num;
+
+/// A complex number
+pub type Complex = num::Complex<f32>;
 
 /// Color / channel intensities in calculations.
 /// Each color channel is handled separately.
@@ -221,7 +225,7 @@ impl Renderable for Sphere {
     }
 
     fn calc_cache(&self, object : &SceneObject) -> Box<dyn Any + Send + Sync> {
-	let pos = object.transform.v3(&V3::ZERO);
+	let pos = object.transform.v3(&V3::zero());
 	Box::new(SphereCache {
 	    pos,
 	    r2: (object.transform.v3(&mat![0.5, 0.0, 0.0]) - pos).sq_magnitude()
@@ -306,7 +310,7 @@ impl Renderable for SimpleMesh {
 	    ])).collect();
 
 	let mid : V3 = tris.iter().map(|t| t.a + t.b + t.c)
-	    .fold(V3::ZERO, |a, b| a + b) * (1.0 / (3 * tris.len()) as f32);
+	    .fold(V3::zero(), |a, b| a + b) * (1.0 / (3 * tris.len()) as f32);
 	let r2 = tris.iter().map(
 	    |t| (t.a - mid).sq_magnitude().max((t.b - mid).sq_magnitude()).max((t.c - mid).sq_magnitude())
 	).fold(0.0f32, |a, b| a.max(b));
@@ -370,146 +374,26 @@ pub struct RenderProperties {
     pub pixels_per_thread : i32
 }
 
-/// A complex number
-#[derive(Debug, Clone, Copy)]
-pub struct Complex {
-    /// The real component
-    pub a : f32,
-
-    /// The imaginary component
-    pub b : f32
-}
-
-// Some operations are currently unused, but used by e.g. the exact
-// version of the p_reflection function
-#[allow(dead_code)]
-impl Complex {
-
-    fn from_trig(m : f32, t : f32) -> Complex {
-	Complex {
-	    a: m * t.cos(),
-	    b: m * t.sin()
-	}
-    }
-    
-    fn sq(self) -> Complex {
-	self * self
-    }
-
-    fn sq_magnitude(self) -> f32 {
-	self.a.powi(2) + self.b.powi(2)
-    }
-    
-    fn magnitude(self) -> f32 {
-	self.sq_magnitude().sqrt()
-    }
-
-    fn argument(self) -> f32 {
-	self.b.atan2(self.a)
-    }
-    
-    fn conj(self) -> Complex {
-	Complex {
-	    a: self.a,
-	    b: -self.b
-	}
-    }
-
-    fn sqrt(self) -> Complex {
-	let m = self.magnitude().sqrt();
-	let t = self.argument() / 2.0;
-	Complex::from_trig(m, t)
-    }
-}
-
-impl Default for Complex {
-    fn default() -> Complex {
-	Complex {
-	    a: 0.0,
-	    b: 0.0
-	}
-    }
-}
-
-impl Add for Complex {
-    type Output = Complex;
-
-    fn add(self, other : Complex) -> Complex {
-	Complex {
-	    a: self.a + other.a,
-	    b: self.b + other.b
-	}
-    }
-}
-
-impl Sub for Complex {
-    type Output = Complex;
-
-    fn sub(self, other : Complex) -> Complex {
-	Complex {
-	    a: self.a - other.a,
-	    b: self.b - other.b
-	}
-    }
-}
-
-impl Mul for Complex {
-    type Output = Complex;
-
-    fn mul(self, other : Complex) -> Complex {
-	Complex {
-	    a: self.a * other.a - self.b * other.b,
-	    b: self.a * other.b - self.b * other.a
-	}
-    }
-}
-
-impl Div for Complex {
-    type Output = Complex;
-
-    fn div(self, other : Complex) -> Complex {
-	let m = self * other.conj();
-	let r = other.sq_magnitude();
-
-	Complex {
-	    a: m.a / r,
-	    b: m.b / r
-	}
-    }
-}
-
-impl From<f32> for Complex {
-    fn from(v : f32) -> Complex {
-	Complex {
-	    a: v,
-	    b: 0.0
-	}
-    }
-}
-
-
 /// The fraction of light falling onto the surface to reflect (directly).
 fn p_reflection(n1 : Complex, n2 : Complex, cos_inc : f32) -> f32 {
     // Approximate
     // https://en.wikipedia.org/wiki/Schlick%27s_approximation
-    let r0 = ((n1 - n2) / (n1 + n2)).sq_magnitude();
+    let r0 = ((n1 - n2) / (n1 + n2)).norm_sqr();
     
     r0 + (1.0 - r0) * (1.0 - r0) * (1.0 - cos_inc).powi(5)
-
+	
     /*
     // Exact
     // https://en.wikipedia.org/wiki/Fresnel_equations
-	let s = (Complex::from(1.0) - (n1 / n2).sq() * (1.0 - cos_inc.powi(2)).into()).sqrt();
-    let u1 = n1 * cos_inc.into();
-    // n2 * cos_tr
-    let u2 = n2 * s;
-	let v1 = n1 * s;
-    // n2 * cos_tr
-    let v2 = n2 * cos_inc.into();
+    let s = (Complex::from(1.0) - (n1 / n2).powi(2) * Complex::from(1.0 - cos_inc.powi(2))).sqrt();
+    let u1 : Complex = n1 * cos_inc;
+    let u2 : Complex = n2 * s;
+    let v1 : Complex = n1 * s;
+    let v2 : Complex = n2 * cos_inc;
     
-    (((u1 - u2) / (u1 + u2)).sq_magnitude() +
-	((v1 - v2) / (v1 + v2)).sq_magnitude()) / 2.0
-     */
+    (((u1 - u2) / (u1 + u2)).norm_sqr() +
+	((v1 - v2) / (v1 + v2)).norm_sqr()) / 2.0
+    */
 }
 
 /// Render a ray in the scene
@@ -532,13 +416,13 @@ fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mu
     if let Some(best) = best {
 	// Handle the hit
 	
-	let mut color = Color::ZERO;
+	let mut color = Color::zero();
 	
 	// Emission
 	color += best.material.emissive;
 
 	if best.material.diffuse != 0.0 && ray.bounces < render_props.bounces {
-	    let mut diffuse = Color::ZERO;
+	    let mut diffuse = Color::zero();
 	    
 	    // Create bounced rays
 	    let n1 = ray.ior;
@@ -665,7 +549,7 @@ impl Camera {
 
 	// World space
 	let pos = self.transform.v3(&pos);
-	let origin = self.transform.v3(&V3::ZERO);
+	let origin = self.transform.v3(&V3::zero());
 	let direction = (pos - origin).normalize();
 
 	render_ray(render_props, scene, randomness, Ray {
@@ -680,8 +564,8 @@ impl Camera {
     fn ensure_mat(mat : Option<DMat<Color>>, size : [i32; 2]) -> DMat<Color> {
 	let sz = [size[1] as usize, size[0] as usize];
 	match mat {
-	    Some(mut m) => {m.resize(sz, Color::ZERO); m},
-	    None => DMat::new(sz, Color::ZERO)
+	    Some(mut m) => {m.resize(sz, Color::zero()); m},
+	    None => DMat::new(sz, Color::zero())
 	}
     }
 
@@ -749,7 +633,7 @@ impl Camera {
     pub fn render(&self, render_props : &RenderProperties, scene : &Scene) -> DMat<Color> {
 	let [w, h] = render_props.resolution;
 	let mut mats = VecDeque::new();
-	let mut curr = DMat::new([w as usize, h as usize], Color::ZERO);
+	let mut curr = DMat::new([w as usize, h as usize], Color::zero());
 
 	if render_props.passes < 1 {
 	    // ??
@@ -774,7 +658,7 @@ impl Camera {
 	    if b == mats.len() {
 		// Does not exist - push this and create a new one
 		mats.push_back(curr);
-		curr = DMat::new([w as usize, h as usize], Color::ZERO);
+		curr = DMat::new([w as usize, h as usize], Color::zero());
 	    } else {
 		// Exists - swap
 		swap(&mut curr, &mut mats[b]);

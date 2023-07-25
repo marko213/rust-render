@@ -1,35 +1,11 @@
-use std::ops::{Add, Mul, Sub, SubAssign, AddAssign, MulAssign, Neg, Deref, DerefMut, Index, IndexMut, Div};
+use std::ops::{Add, Mul, Sub, SubAssign, AddAssign, MulAssign, Neg, Deref, DerefMut, Index, IndexMut};
 use std::fmt;
 use std::any::type_name;
+use num::{Float, traits::NumAssignOps};
 
-// This trait basically captures "yes this is a number that you can do all the math with"
-// which should extend to any floating-point implementation
-pub trait GoodNum : std::fmt::Display + Copy + Add<Output = Self>
-    + AddAssign + Sub<Output = Self> + SubAssign + Mul<Output = Self> 
-    + MulAssign + Neg<Output = Self> + Div<Output = Self> {
-	const ZERO : Self;
-	const ONE : Self;
+pub trait GoodNum : Float + NumAssignOps + fmt::Display {}
 
-	fn gn_sqrt(self) -> Self;
-    }
-
-impl GoodNum for f32 {
-    const ZERO : f32 = 0.0;
-    const ONE : f32 = 1.0;
-
-    fn gn_sqrt(self) -> f32 {
-	self.sqrt()
-    }
-}
-
-impl GoodNum for f64 {
-    const ZERO : f64 = 0.0;
-    const ONE : f64 = 1.0;
-
-    fn gn_sqrt(self) -> f64 {
-	self.sqrt()
-    }
-}
+impl GoodNum for f32 {}
 
 // Help create matrices simply (e.g. mat![[1], [2]])
 #[macro_export]
@@ -45,7 +21,7 @@ pub struct Mat<const N : usize, const M : usize, T : GoodNum> {
 
 impl<const N : usize, const M : usize, T : GoodNum> Default for Mat<N, M, T> {
     fn default() -> Mat<N, M, T> {
-	Mat::ZERO
+	Mat::zero()
     }
 }
 
@@ -64,15 +40,21 @@ impl<const N : usize, const M : usize, T : GoodNum> Deref for Mat<N, M, T> {
 }
 
 impl<const N : usize, const M : usize, T : GoodNum> Mat<N, M, T> {
-    pub const ZERO : Self = Self{data: [[T::ZERO; M]; N]};
-    pub const ONE : Self = Self{data: [[T::ONE; M]; N]};
 
+    pub fn zero() -> Self {
+	Self{data: [[T::zero(); M]; N]}
+    }
+
+    pub fn one() -> Self {
+	Self{data: [[T::one(); M]; N]}
+    }
+    
     pub const fn new(data : [[T; M]; N]) -> Self {
 	Self { data }
     }
 
     pub fn slice<const P : usize, const Q : usize>(&self) -> Mat<P, Q, T> {
-	let mut r = Mat::<P, Q, T>::ZERO;
+	let mut r = Mat::<P, Q, T>::zero();
 	for y in 0..N.min(P) {
 	    for x in 0..M.min(Q) {
 		r.data[y][x] = self.data[y][x];
@@ -82,7 +64,7 @@ impl<const N : usize, const M : usize, T : GoodNum> Mat<N, M, T> {
     }
 
     pub fn transpose(&self) -> Mat<M, N, T> {
-	let mut r = Mat::<M, N, T>::ZERO;
+	let mut r = Mat::<M, N, T>::zero();
 	for y in 0..N {
 	    for x in 0..M {
 		r.data[x][y] = self.data[y][x];
@@ -96,7 +78,7 @@ impl<const N : usize, const M : usize, T : GoodNum> Mat<N, M, T> {
     }
     
     pub fn dot(self, other : Self) -> T {
-	let mut sum = T::ZERO;
+	let mut sum = T::zero();
 	for y in 0..N {
 	    for x in 0..M {
 		sum += self.data[y][x] * other.data[y][x];
@@ -106,7 +88,7 @@ impl<const N : usize, const M : usize, T : GoodNum> Mat<N, M, T> {
     }
 
     pub fn sum(self) -> T {
-	let mut sum = T::ZERO;
+	let mut sum = T::zero();
 	for y in 0..N {
 	    for x in 0..M {
 		sum += self.data[y][x];
@@ -177,7 +159,7 @@ impl<const N : usize, const M : usize, const O : usize, T : GoodNum> Mul<Mat<M, 
     type Output = Mat<N, O, T>;
 
     fn mul(self, other : Mat<M, O, T>) -> Self::Output {
-	let mut r = Self::Output::ZERO;
+	let mut r = Self::Output::zero();
 	for i in 0..N {
 	    for j in 0..O {
 		for k in 0..M {
@@ -277,17 +259,17 @@ impl<const N : usize, T : GoodNum> V<N, T> {
     }
 
     pub fn magnitude(self) -> T {
-	self.sq_magnitude().gn_sqrt()
+	self.sq_magnitude().sqrt()
     }
     
     pub fn normalize(self) -> Self {
-	self * (T::ONE / self.magnitude())
+	self * (T::one() / self.magnitude())
     }
 }
 
 impl<const N : usize, T : GoodNum> From<[T;N]> for V<N, T> {
     fn from(data : [T;N]) -> Self {
-	let mut data2 = [[T::ZERO;1];N];
+	let mut data2 = [[T::zero();1];N];
 	for i in 0..N {
 	    data2[i][0] = data[i];
 	}
