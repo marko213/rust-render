@@ -74,6 +74,7 @@ fn add_bloom(mat : &DMat<Color>, r : i32, c : f32) -> DMat<Color> {
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Profile {
     High,
+    HighHalf,
     Mid,
     Low,
     Single
@@ -243,6 +244,10 @@ fn main() {
 	pixels_per_thread: 2500
     };
 
+    let mut high_half = high.clone();
+    high_half.resolution[0] /= 2;
+    high_half.resolution[1] /= 2;
+    
     let mid = RenderProperties {
 	resolution: [640, 480],
 	passes: 15,
@@ -271,6 +276,7 @@ fn main() {
     
     let profile = match args.profile {
 	Profile::High => &high,
+	Profile::HighHalf => &high_half,
 	Profile::Mid => &mid,
 	Profile::Low => &low,
 	Profile::Single => &single,
@@ -309,7 +315,7 @@ fn main() {
 	    img.save(format!("img/{:03}.png", f)).unwrap();
 	}
     } else {
-	// Render a single framee
+	// Render a single frame
 	scene.calc_cache();
 	let frame = main_cam.render(profile, &scene);
 	let frame = add_bloom(&frame, 3, 0.005);
