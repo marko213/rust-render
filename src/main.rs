@@ -119,6 +119,7 @@ fn main() {
 	emissive: Color::zero(),
 	roughness: 2.0,
 	diffuse: 1.0,
+	transmission: 0.0,
 	ior: 1.457.into()
     });
 
@@ -145,12 +146,26 @@ fn main() {
 	mat![-0.5,  0.5,  0.5],
 	mat![ 0.5,  0.5,  0.5],
     ]);
+
+    let prism_mesh = triangle_march(&vec![
+	mat![ 0.5,  0.5, -0.5],
+	mat![-0.5, -0.5, -0.5],
+	mat![ 0.5, -0.5, -0.5],
+	mat![-0.5, -0.5,  0.5],
+	mat![-0.5,  0.5,  0.5],
+	mat![-0.5, -0.5, -0.5],
+	mat![-0.5,  0.5, -0.5],
+	mat![ 0.5,  0.5, -0.5],
+	mat![-0.5,  0.5,  0.5],
+	mat![ 0.5, -0.5, -0.5],
+    ]);
     
     let silver_mirror = Arc::new(PointMaterial {
 	color: mat![0.99, 0.99, 0.99],
 	emissive: Color::zero(),
 	roughness: 0.0,
 	diffuse: 1.0,
+	transmission: 0.0,
 	ior: Complex {re: 0.135, im: 3.985}
     });
     
@@ -168,6 +183,7 @@ fn main() {
 	emissive: Color::zero(),
 	roughness: 0.3,
 	diffuse: 1.0,
+	transmission: 0.0,
 	ior: 1.55.into()
     });
     
@@ -180,16 +196,35 @@ fn main() {
 	    * Transform::rotation_xyz(-PI / 4.0, PI / 4.0, -PI / 8.0),
 	cube
     ));
+    
     let sphere = Arc::new(Sphere {
 	material: silver_mirror
     });
-
     
     scene.objects.push(SceneObject::new(
 	Transform::translation(mat![-2.0, 1.5, -5.0]),
 	sphere
     ));
 
+    let glass = Arc::new(PointMaterial {
+	color: mat![1.0, 1.0, 1.0],
+	emissive: Color::zero(),
+	roughness: 0.0,
+	diffuse: 1.0,
+	transmission: 0.95,
+	ior: 1.5.into()
+    });
+
+    let prism = Arc::new(SimpleMesh {
+	material: glass.clone(),
+	tris: prism_mesh
+    });
+
+    scene.objects.push(SceneObject::new(
+	Transform::translation(mat![0.3, 0.7, -2.5]) *
+	    Transform::scale(mat![0.7, 0.7, 0.7]),
+	prism
+    ));
     
     // Parse arguments
     let args = Args::parse();
@@ -245,6 +280,7 @@ fn main() {
     create_dir_all("img").unwrap();
 
     if args.animation {
+	let prism_initial = scene.objects[3].transform;
 	// Render an animation
 	for f in 0..args.frames {
 	    let p = (f as f32) / (args.frames as f32);
@@ -261,6 +297,10 @@ fn main() {
 		Transform::translation(cube_pos) *
 		Transform::rotation_xyz(0.0, p * 2.0 * PI, 0.0) *
 		Transform::translation(mat![-2.0, 1.5, -5.0] - cube_pos);
+
+	    scene.objects[3].transform =
+		prism_initial *
+		Transform::rotation_xyz(p * 2.0 * PI, 0.0, p * 2.0 * PI);
 	    
 	    scene.calc_cache();
 	    let frame = main_cam.render(profile, &scene);
