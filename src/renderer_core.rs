@@ -38,8 +38,16 @@ pub struct PointMaterial {
     /// The diffuse / normal reflection multiplier.
     ///
     /// `0.0` to disable diffuse bounces entirely (e.g. a purely emissive material).
+    /// Note that this also affects transmission.
     pub diffuse : f32,
 
+    /// The transmission / scattering multiplier
+    ///
+    /// `0.0` means no transmission at all (all rays are considered to scatter into the surface layer),
+    /// `1.0` corresponds to a fully transparent material (no diffusion). Note that this is also
+    /// scaled according to the amount of light that is refracted "into" the material.
+    pub transmission: f32,
+    
     /// The (possibly complex) index of refraction of the material.
     ///
     /// This accounts for the Fresnel effect for high-angle incident rays
@@ -55,9 +63,7 @@ pub struct Ray {
     /// The direction of the ray (normalized)
     direction : V3,
     /// The number of bounces that have been made by rays up to this one
-    bounces : i32,
-    /// The IOR of the medium the ray is currently travelling through
-    ior : Complex
+    bounces : i32
 }
 
 /// The properties of a ray hitting a surface
@@ -72,7 +78,10 @@ pub struct RayHit {
     normal : V3,
     
     /// The material of the hit point
-    material : Arc<PointMaterial>
+    material : Arc<PointMaterial>,
+
+    /// Whether this is a hit from inside a solid (hopefully)
+    inner : bool
 }
 
 /// A transform matrix, to be left-multiplied to positions (column vectors)
@@ -174,7 +183,7 @@ pub trait Renderable : Sync + Send {
 
     /// Raycast against this renderable
     /// The closest (if any) hit for this renderable will be returned
-    fn raycast(&self, object : &SceneObject, ray : &Ray) -> Option<RayHit>;
+    fn raycast(&self, object : &SceneObject, ray : &Ray, flipped : bool) -> Option<RayHit>;
 }
 
 /// Get the vector from the ray's origin to the point
@@ -199,25 +208,27 @@ struct SphereCache {
 }
 
 impl Renderable for Sphere {
-    fn raycast(&self, object : &SceneObject, ray : &Ray) -> Option<RayHit> {
+    fn raycast(&self, object : &SceneObject, ray : &Ray, flipped : bool) -> Option<RayHit> {
 	// Extract the position and the square of the radius from the cache
 	
 	let cache : &SphereCache = object.cache.as_ref().unwrap().downcast_ref().unwrap();
-
+	let flip = if flipped { -1.0 } else { 1.0 };
+	
 	// Check whether the line corresponding to the ray intersects the sphere
 	let (x, l2) = point_ray(cache.pos, ray);
 	if l2 <= cache.r2 {
-	    // Check whether the *first* intersection with the line occurs on the ray
-	    let dist = x.dot(ray.direction) - (cache.r2 - l2).sqrt();
+	    // Check whether the correct intersection with the line occurs on the ray
+	    let dist = x.dot(ray.direction) - (cache.r2 - l2).sqrt() * flip;
 	    if dist > 0.0 {
 		// A valid hit
 		let position = ray.origin + ray.direction * dist;
-		let normal = (position - cache.pos).normalize();
+		let normal = (position - cache.pos).normalize() * flip;
 		return Some(RayHit {
 		    distance: dist,
 		    position,
 		    normal,
-		    material: self.material.clone()
+		    material: self.material.clone(),
+		    inner: flipped
 		});
 	    }
 	}
@@ -249,9 +260,11 @@ struct SimpleMeshCache {
 }
 
 impl Renderable for SimpleMesh {
-    fn raycast(&self, object : &SceneObject, ray : &Ray) -> Option<RayHit> {
+    fn raycast(&self, object : &SceneObject, ray : &Ray, flipped : bool) -> Option<RayHit> {
 	// Extract the transformed triangles and the bounding sphere from the cache
 	let cache : &SimpleMeshCache = object.cache.as_ref().unwrap().downcast_ref().unwrap();
+
+	let flip = if flipped { -1.0 } else { 1.0 };
 	
 	// Check whether the ray collides with the bounding sphere
 	let (_, l2) = point_ray(cache.bounding_sphere.pos, ray);
@@ -263,10 +276,10 @@ impl Renderable for SimpleMesh {
 	let mut best : Option<(V3, f32, V3)> = None;
 	for t in cache.tris.iter() {
 	    // Backface culling - can't see a triangle oriented the wrong way
-	    let dot = t.normal.dot(ray.direction);
+	    let dot = t.normal.dot(ray.direction) * flip;
 	    if dot < 0.0 {
 		// Perpendicular distance
-		let pdist = t.normal.dot(ray.origin - t.a);
+		let pdist = t.normal.dot(ray.origin - t.a) * flip;
 		if pdist > 0.0 {
 		    let dist = pdist / -dot;
 		    
@@ -296,7 +309,8 @@ impl Renderable for SimpleMesh {
 		    distance,
 		    material: self.material.clone(),
 		    position,
-		    normal
+		    normal: normal * flip,
+		    inner: flipped
 		})
 	}
     }
@@ -396,112 +410,195 @@ fn p_reflection(n1 : Complex, n2 : Complex, cos_inc : f32) -> f32 {
     */
 }
 
+/// Calculate the vector pointing in the direction the refracted ray should go
+fn refraction_direction(normal : V3, incident : V3, cos_inc : f32, n1 : Complex, n2 : Complex) -> V3 {
+    let sin_inc = (1.0 - cos_inc.powi(2)).sqrt();
+    let sin_refract = n1.re / n2.re * sin_inc;
+    // Direction along the surface in the direction of the ray
+    let dir_tangent = (incident - normal * normal.dot(incident))
+	.normalize();
+    let cos_refract = (1.0 - sin_refract.powi(2)).sqrt();
+    dir_tangent * sin_refract - normal * cos_refract
+}
+
+
+/// A medium through which rays can pass
+#[derive(Clone)]
+struct Medium<'a, 'b> {
+    ior : Complex,
+    object : Option<&'a SceneObject>,
+    previous : Option<&'b Medium<'a, 'b>>
+}
+
+const INTENSITY_EPSILON : f32 = 1e-6;
+const DISTANCE_EPSILON : f32 = 1e-6;
+
+/// Handle bounces / refractions at a point with the given normal
+fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness,
+			  ray : &Ray, hit : &RayHit, object : &SceneObject, medium : &Medium,
+			  normal : V3) -> Color {
+    let mut color = Color::zero();
+    
+    // Get the incident angle to the normal
+    let cos_inc = -normal.dot(ray.direction);
+
+    // Find the proportion of light that is reflected
+    let n1 = medium.ior;
+    let n2 = hit.material.ior;
+    let p_reflect = p_reflection(n1, n2, cos_inc);
+    
+    // Don't calculate reflections for rays that are purely transmitted
+    if p_reflect > INTENSITY_EPSILON || hit.material.transmission != 1.0 {
+	// Reflected direction
+	let direction = normal * (2.0 * cos_inc) + ray.direction;
+	
+	// Render the reflected ray
+	let fall = render_ray(render_props, scene, randomness, Ray {
+	    origin: hit.position + direction * DISTANCE_EPSILON,
+	    direction,
+	    bounces: ray.bounces + 1
+	}, medium);
+	
+	// Reflected through
+	color += fall * p_reflect;
+	
+	// Reflected channel-wise
+	color += fall.dot_matrix(hit.material.color) * (1.0 - p_reflect)
+	    * (1.0 - hit.material.transmission);
+    }
+
+    // Don't calculate transmission for rays that are almost entirely reflected
+    let p_transmit = (1.0 - p_reflect) * hit.material.transmission;
+
+    if p_transmit > INTENSITY_EPSILON {
+	
+	let dir_refract = refraction_direction(normal, ray.direction,
+					       cos_inc, medium.ior, hit.material.ior);
+
+	// Determine whether we're exiting or entering a medium
+	// If the hit is on an inner face, it *should* be exiting the medium
+	let new_medium = if hit.inner && medium.previous.is_some() {
+	    medium.previous.unwrap().clone()
+	} else {Medium {
+	    ior: hit.material.ior,
+	    object: Some(object),
+	    previous: Some(medium)
+	}};
+	
+	let transmission =  render_ray(render_props, scene, randomness, Ray {
+	    origin: hit.position + dir_refract * DISTANCE_EPSILON,
+	    direction: dir_refract,
+	    bounces: ray.bounces + 1
+	}, &new_medium);
+	color += transmission * p_transmit;
+    }
+
+    color
+}
+
+/// Render the diffuse (scatter + albedo + transmission) component of a ray falling onto a surface
+fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness,
+		      ray : Ray, hit : RayHit, object : &SceneObject, medium : &Medium) -> Color {
+    let mut color = Color::zero();
+    
+    // Emission
+    color += hit.material.emissive;
+
+    if hit.material.diffuse != 0.0 && ray.bounces < render_props.bounces {
+	let mut diffuse = Color::zero();
+	
+	let cos_inc = -hit.normal.dot(ray.direction);
+	let perfect = hit.normal * (2.0 * cos_inc) + ray.direction;
+	
+	if hit.material.roughness == 0.0 {
+	    // No need to create multiple rays here (they would all bounce the same)
+	    diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit, object,
+					      medium, hit.normal);
+	} else {
+	    // Split the ray into multiple
+	    for _ in 0..render_props.bounce_split {
+		// Generate a ray that does not go into the plane
+		let direction = {
+		    // Cylindrical coordinates
+		    let t = 2.0 * PI * randomness.rng.gen::<f32>();
+		    let y = 2.0 * randomness.rng.gen::<f32>() - 1.0;
+
+		    // Point on the unit sphere
+		    let r = (1.0 - y.powi(2)).sqrt();
+		    let x = r * t.cos();
+		    let z = r * t.sin();
+
+		    // Perturbed direction
+		    // Since the perfect ray has a positive dot product with the normal,
+		    // either the perturbed direction or the negatively perturbed direction
+		    // will have a positive dot product as well
+		    let a = mat![x, y, z] * hit.material.roughness;
+		    let dir = perfect + a;
+		    if dir.dot(hit.normal) > 0.0 {
+			dir
+		    } else {
+			perfect - a
+		    }
+		}.normalize();
+
+		// Extract the resulting normal vector
+		let local_normal = (direction - ray.direction).normalize();
+		diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit, object,
+						  medium, local_normal);
+	    }
+
+	    diffuse *= 1.0 / (render_props.bounce_split as f32);
+	}
+
+	color += diffuse * hit.material.diffuse;
+    }
+    
+    color
+}
+
 /// Render a ray in the scene
-fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness, ray : Ray) -> Color {
+fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness, ray : Ray,
+	      medium : &Medium) -> Color {
     // Find the closest ray hit
-    let mut best : Option<RayHit>  = None;
+    let mut best : Option<(RayHit, &SceneObject)> = None;
     for obj in scene.objects.iter() {
-	if let Some(curr) = obj.renderable.raycast(&obj, &ray) {
+	if let Some(curr) = obj.renderable.raycast(&obj, &ray, false) {
 	    match best {
-		Some(ref b) => {
+		Some((ref b, _)) => {
 		    if b.distance > curr.distance {
-			best = Some(curr);
+			best = Some((curr, obj));
 		    }
 		},
-		None => best = Some(curr)
+		None => best = Some((curr, obj))
 	    }
 	}
     }
-    
-    if let Some(best) = best {
-	// Handle the hit
-	
-	let mut color = Color::zero();
-	
-	// Emission
-	color += best.material.emissive;
 
-	if best.material.diffuse != 0.0 && ray.bounces < render_props.bounces {
-	    let mut diffuse = Color::zero();
-	    
-	    // Create bounced rays
-	    let n1 = ray.ior;
-	    let n2 = best.material.ior;
-	    
-	    let cos_inc = -best.normal.dot(ray.direction);
-	    let perfect = best.normal * (2.0 * cos_inc) + ray.direction;
-	    
-	    if best.material.roughness == 0.0 {
-		// No need to create multiple rays here (they would all bounce the same)
-		let fall = render_ray(render_props, scene, randomness, Ray {
-		    origin: best.position,
-		    direction: perfect,
-		    bounces: ray.bounces + 1,
-		    ior: ray.ior
-		});
-		
-		let p_reflect = p_reflection(n1, n2, cos_inc);
-		
-		// Reflected through
-		diffuse += fall * p_reflect;
-		
-		// Reflected channel-wise
-		diffuse += fall.dot_matrix(best.material.color) * (1.0 - p_reflect);
-	    } else {
-		// Split the ray into multiple
-		for _ in 0..render_props.bounce_split {
-		    // Generate a ray that does not go into the plane
-		    let direction = {
-			// Cylindrical coordinates
-			let t = 2.0 * PI * randomness.rng.gen::<f32>();
-			let y = 2.0 * randomness.rng.gen::<f32>() - 1.0;
-
-			// Point on the unit sphere
-			let r = (1.0 - y.powi(2)).sqrt();
-			let x = r * t.cos();
-			let z = r * t.sin();
-
-			// Perturbed direction
-			// Since the perfect ray has a positive dot product with the normal,
-			// either the perturbed direction or the negatively perturbed direction
-			// will have a positive dot product as well
-			let a = mat![x, y, z] * best.material.roughness;
-			let dir = perfect + a;
-			if dir.dot(best.normal) > 0.0 {
-			    dir
-			} else {
-			    perfect - a
-			}
-		    }.normalize();
-		    
-		    // Render the ray
-		    let fall = render_ray(render_props, scene, randomness, Ray {
-			origin: best.position,
-			direction,
-			bounces: ray.bounces + 1,
-			ior: ray.ior
-		    });
-
-		    // Get the falling / reflected angle to the virtual normal
-		    // cos(2t) = 2 cos^2 t - 1
-		    // cos t = sqrt((cos(2t) + 1) / 2)
-		    let cos_inc = ((-direction.dot(ray.direction) + 1.0) / 2.0).sqrt();
-		    let p_reflect = p_reflection(n1, n2, cos_inc);
-		    
-		    // Reflected through
-		    diffuse += fall * p_reflect;
-		    
-		    // Reflected channel-wise
-		    diffuse += fall.dot_matrix(best.material.color) * (1.0 - p_reflect);
+    // Check whether we have reached the inner boundary of the current medium
+    // Exiting an *outer* medium before this is UB (physics-wise)
+    if let Some(medium_object) = medium.object {
+	if let Some(inner_hit) = medium_object.renderable.raycast(medium_object, &ray, true) {
+	    if let Some((ref hit, _)) = best {
+		if (inner_hit.distance - hit.distance) < DISTANCE_EPSILON {
+		    // These surfaces seem to be squished together
+		    // TODO
+		} else if inner_hit.distance < hit.distance {
+		    // Boundary of the current medium
+		    return render_ray_diffuse(render_props, scene, randomness, ray, inner_hit,
+					      medium_object, medium);
 		}
-
-		diffuse *= 1.0 / (render_props.bounce_split as f32);
+	    } else {
+		// Nothing else to hit
+		// Boundary of the current medium
+		return render_ray_diffuse(render_props, scene, randomness, ray, inner_hit,
+					  medium_object, medium);
 	    }
-
-	    color += diffuse * best.material.diffuse;
 	}
-	
-	color
+    }
+
+    if let Some((hit, object)) = best {
+	// Handle the hit
+	render_ray_diffuse(render_props, scene, randomness, ray, hit, object, medium)
     } else {
 	// Ray didn't hit anything - sky
 	scene.sky.sky_ray(&ray)
@@ -555,8 +652,11 @@ impl Camera {
 	render_ray(render_props, scene, randomness, Ray {
 	    origin,
 	    direction,
-	    bounces: 0,
-	    ior: scene.ior
+	    bounces: 0
+	}, &Medium {
+	    ior: scene.ior,
+	    object: None,
+	    previous: None
 	})
     }
 
