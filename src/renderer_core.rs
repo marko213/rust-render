@@ -900,9 +900,9 @@ pub fn triangle_march(points : &Vec<V3>) -> Vec<[V3; 3]> {
 	
 	while let Some(p) = iter.next() {
 	    r.push(if flip {
-		[*a, *b, *p]
-	    } else {
 		[*b, *a, *p]
+	    } else {
+		[*a, *b, *p]
 	    });
 	    a = b;
 	    b = p;
