@@ -67,6 +67,7 @@ pub struct Ray {
 }
 
 /// The properties of a ray hitting a surface
+#[derive(Clone)]
 pub struct RayHit {
     /// The distance from the origin of the ray to the hit position
     distance : f32,
@@ -78,10 +79,7 @@ pub struct RayHit {
     normal : V3,
     
     /// The material of the hit point
-    material : Arc<PointMaterial>,
-
-    /// Whether this is a hit from inside a solid (hopefully)
-    inner : bool
+    material : Arc<PointMaterial>
 }
 
 /// A transform matrix, to be left-multiplied to positions (column vectors)
@@ -227,8 +225,7 @@ impl Renderable for Sphere {
 		    distance: dist,
 		    position,
 		    normal,
-		    material: self.material.clone(),
-		    inner: flipped
+		    material: self.material.clone()
 		});
 	    }
 	}
@@ -309,8 +306,7 @@ impl Renderable for SimpleMesh {
 		    distance,
 		    material: self.material.clone(),
 		    position,
-		    normal: normal * flip,
-		    inner: flipped
+		    normal: normal * flip
 		})
 	}
     }
@@ -435,7 +431,7 @@ const DISTANCE_EPSILON : f32 = 1e-6;
 
 /// Handle bounces / refractions at a point with the given normal
 fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness,
-			  ray : &Ray, hit : &RayHit, object : &SceneObject, medium : &Medium,
+			  ray : &Ray, hit : &RayHit, medium : &Medium, next_medium : &Medium,
 			  normal : V3) -> Color {
     let mut color = Color::zero();
     
@@ -474,22 +470,12 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 	
 	let dir_refract = refraction_direction(normal, ray.direction,
 					       cos_inc, medium.ior, hit.material.ior);
-
-	// Determine whether we're exiting or entering a medium
-	// If the hit is on an inner face, it *should* be exiting the medium
-	let new_medium = if hit.inner && medium.previous.is_some() {
-	    medium.previous.unwrap().clone()
-	} else {Medium {
-	    ior: hit.material.ior,
-	    object: Some(object),
-	    previous: Some(medium)
-	}};
 	
 	let transmission =  render_ray(render_props, scene, randomness, Ray {
 	    origin: hit.position + dir_refract * DISTANCE_EPSILON,
 	    direction: dir_refract,
 	    bounces: ray.bounces + 1
-	}, &new_medium);
+	}, next_medium);
 	color += transmission * p_transmit;
     }
 
@@ -498,7 +484,8 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 
 /// Render the diffuse (scatter + albedo + transmission) component of a ray falling onto a surface
 fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness,
-		      ray : Ray, hit : RayHit, object : &SceneObject, medium : &Medium) -> Color {
+		      ray : Ray, hit : RayHit, medium : &Medium, next_medium : &Medium,
+		      exit_hit : Option<RayHit>) -> Color {
     let mut color = Color::zero();
     
     // Emission
@@ -509,11 +496,16 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 	
 	let cos_inc = -hit.normal.dot(ray.direction);
 	let perfect = hit.normal * (2.0 * cos_inc) + ray.direction;
+
+	let roughness = match exit_hit {
+	    Some(ref exit_hit) => hit.material.roughness.max(exit_hit.material.roughness),
+	    None => hit.material.roughness
+	};
 	
-	if hit.material.roughness == 0.0 {
+	if roughness == 0.0 {
 	    // No need to create multiple rays here (they would all bounce the same)
-	    diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit, object,
-					      medium, hit.normal);
+	    diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit,
+					      medium, next_medium, hit.normal);
 	} else {
 	    // Split the ray into multiple
 	    for _ in 0..render_props.bounce_split {
@@ -532,7 +524,7 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 		    // Since the perfect ray has a positive dot product with the normal,
 		    // either the perturbed direction or the negatively perturbed direction
 		    // will have a positive dot product as well
-		    let a = mat![x, y, z] * hit.material.roughness;
+		    let a = mat![x, y, z] * roughness;
 		    let dir = perfect + a;
 		    if dir.dot(hit.normal) > 0.0 {
 			dir
@@ -543,8 +535,8 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 
 		// Extract the resulting normal vector
 		let local_normal = (direction - ray.direction).normalize();
-		diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit, object,
-						  medium, local_normal);
+		diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit,
+						  medium, next_medium, local_normal);
 	    }
 
 	    diffuse *= 1.0 / (render_props.bounce_split as f32);
@@ -555,7 +547,7 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
     
     color
 }
-
+    
 /// Render a ray in the scene
 fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness, ray : Ray,
 	      medium : &Medium) -> Color {
@@ -579,26 +571,37 @@ fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mu
     if let Some(medium_object) = medium.object {
 	if let Some(inner_hit) = medium_object.renderable.raycast(medium_object, &ray, true) {
 	    if let Some((ref hit, _)) = best {
-		if (inner_hit.distance - hit.distance) < DISTANCE_EPSILON {
+		if (inner_hit.distance - hit.distance).abs() < DISTANCE_EPSILON {
 		    // These surfaces seem to be squished together
-		    // TODO
+		    // Note that this can't currently handle exiting several mediums at once
+		    return render_ray_diffuse(render_props, scene, randomness, ray, hit.clone(),
+					      medium, &Medium {
+						  ior: hit.material.ior,
+						  object: medium.previous.unwrap().object,
+						  previous: medium.previous.unwrap().previous
+					      }, Some(inner_hit));
 		} else if inner_hit.distance < hit.distance {
 		    // Boundary of the current medium
 		    return render_ray_diffuse(render_props, scene, randomness, ray, inner_hit,
-					      medium_object, medium);
+					      medium, medium.previous.unwrap(), None);
 		}
 	    } else {
 		// Nothing else to hit
 		// Boundary of the current medium
 		return render_ray_diffuse(render_props, scene, randomness, ray, inner_hit,
-					  medium_object, medium);
+					  medium, medium.previous.unwrap(), None);
 	    }
 	}
     }
 
     if let Some((hit, object)) = best {
 	// Handle the hit
-	render_ray_diffuse(render_props, scene, randomness, ray, hit, object, medium)
+	let next_medium = Medium {
+	    ior: hit.material.ior,
+	    object: Some(object),
+	    previous: Some(medium),
+	};
+	render_ray_diffuse(render_props, scene, randomness, ray, hit, medium, &next_medium, None)
     } else {
 	// Ray didn't hit anything - sky
 	scene.sky.sky_ray(&ray)
