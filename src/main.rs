@@ -190,7 +190,7 @@ fn main() {
     
     let cube = Arc::new(SimpleMesh {
 	material: red.clone(),
-	tris: cube_mesh
+	tris: cube_mesh.clone()
     });
     scene.objects.push(SceneObject::new(
 	Transform::translation(mat![0.0, 0.9, -4.0])
@@ -226,6 +226,21 @@ fn main() {
 	    Transform::scale(mat![0.7, 0.7, 0.7]),
 	prism
     ));
+
+    let glass_cube = Arc::new(SimpleMesh {
+	material:glass.clone(),
+	tris: cube_mesh
+    });
+    scene.objects.push(SceneObject::new(
+	Transform::translation(mat![-1.0, 0.5 * 0.8, -2.5]) *
+	    Transform::scale(mat![0.5, 0.8, 1.0]),
+	glass_cube.clone()
+    ));
+    scene.objects.push(SceneObject::new(
+	Transform::translation(mat![-1.0 + 0.25 + 0.1, 0.5 * 0.5, -2.2]) *
+	    Transform::scale(mat![0.2, 0.5, 1.0]),
+	glass_cube.clone()
+    ));
     
     // Parse arguments
     let args = Args::parse();
@@ -238,7 +253,7 @@ fn main() {
     let high = RenderProperties {
 	resolution: [1920, 1080],
 	passes: 15,
-	bounces: 4,
+	bounces: 5,
 	bounce_split: 4,
 	threads,
 	pixels_per_thread: 2500
