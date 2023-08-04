@@ -63,7 +63,9 @@ pub struct Ray {
     /// The direction of the ray (normalized)
     direction : V3,
     /// The number of bounces that have been made by rays up to this one
-    bounces : i32
+    bounces : i32,
+    /// The number of splits that have been made by rays up to this one
+    splits: i32
 }
 
 /// The properties of a ray hitting a surface
@@ -376,6 +378,9 @@ pub struct RenderProperties {
     
     /// How many rays to split a single ray into when randomly bouncing
     pub bounce_split : i32,
+
+    /// How many times to allow a ray to be split into multiple
+    pub split_cap : i32,
     
     /// How many threads to use for rendering
     pub threads : i32,
@@ -432,7 +437,7 @@ const DISTANCE_EPSILON : f32 = 1e-6;
 /// Handle bounces / refractions at a point with the given normal
 fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness,
 			  ray : &Ray, hit : &RayHit, medium : &Medium, next_medium : &Medium,
-			  normal : V3) -> Color {
+			  normal : V3, split_ray : bool) -> Color {
     let mut color = Color::zero();
     
     // Get the incident angle to the normal
@@ -452,7 +457,8 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 	let fall = render_ray(render_props, scene, randomness, Ray {
 	    origin: hit.position + direction * DISTANCE_EPSILON,
 	    direction,
-	    bounces: ray.bounces + 1
+	    bounces: ray.bounces + 1,
+	    splits: ray.splits + if split_ray { 1 } else { 0 }
 	}, medium);
 	
 	// Reflected through
@@ -474,7 +480,8 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 	let transmission =  render_ray(render_props, scene, randomness, Ray {
 	    origin: hit.position + dir_refract * DISTANCE_EPSILON,
 	    direction: dir_refract,
-	    bounces: ray.bounces + 1
+	    bounces: ray.bounces + 1,
+	    splits: ray.splits + if split_ray { 1 } else { 0 }
 	}, next_medium);
 	color += transmission * p_transmit;
     }
@@ -505,10 +512,12 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 	if roughness == 0.0 {
 	    // No need to create multiple rays here (they would all bounce the same)
 	    diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit,
-					      medium, next_medium, hit.normal);
+					      medium, next_medium, hit.normal, false);
 	} else {
-	    // Split the ray into multiple
-	    for _ in 0..render_props.bounce_split {
+	    // Perturbed ray
+	    let num_rays = if ray.splits < render_props.split_cap {
+		render_props.bounce_split } else { 1 };
+	    for _ in 0..num_rays {
 		// Generate a ray that does not go into the plane
 		let direction = {
 		    // Cylindrical coordinates
@@ -536,10 +545,10 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 		// Extract the resulting normal vector
 		let local_normal = (direction - ray.direction).normalize();
 		diffuse += handle_ray_with_normal(render_props, scene, randomness, &ray, &hit,
-						  medium, next_medium, local_normal);
+						  medium, next_medium, local_normal, num_rays > 1);
 	    }
 
-	    diffuse *= 1.0 / (render_props.bounce_split as f32);
+	    diffuse *= 1.0 / (num_rays as f32);
 	}
 
 	color += diffuse * hit.material.diffuse;
@@ -655,7 +664,8 @@ impl Camera {
 	render_ray(render_props, scene, randomness, Ray {
 	    origin,
 	    direction,
-	    bounces: 0
+	    bounces: 0,
+	    splits: 0
 	}, &Medium {
 	    ior: scene.ior,
 	    object: None,

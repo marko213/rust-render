@@ -253,8 +253,9 @@ fn main() {
     let high = RenderProperties {
 	resolution: [1920, 1080],
 	passes: 15,
-	bounces: 5,
+	bounces: 8,
 	bounce_split: 4,
+	split_cap: 2,
 	threads,
 	pixels_per_thread: 2500
     };
@@ -266,16 +267,18 @@ fn main() {
     let mid = RenderProperties {
 	resolution: [640, 480],
 	passes: 15,
-	bounces: 3,
+	bounces: 6,
 	bounce_split: 3,
+	split_cap: 1,
 	threads,
 	pixels_per_thread: 2500
     };
     let low = RenderProperties {
 	resolution: [640, 480],
 	passes: 2,
-	bounces: 2,
-	bounce_split: 4,
+	bounces: 4,
+	bounce_split: 3,
+	split_cap: 1,
 	threads,
 	pixels_per_thread: 2500
     };
@@ -283,8 +286,9 @@ fn main() {
     let single = RenderProperties {
 	resolution: [640, 480],
 	passes: 15,
-	bounces: 3,
+	bounces: 4,
 	bounce_split: 3,
+	split_cap: 1,
 	threads: 1,
 	pixels_per_thread: 2500
     };
