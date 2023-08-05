@@ -1,7 +1,7 @@
 
 use crate::mat;
 use std::sync::Arc;
-use crate::mat::{Mat, V3, DMat};
+use crate::mat::{Mat, V3, DMat, V};
 use rand::{Rng, SeedableRng, thread_rng};
 use rand_xoshiro::SplitMix64;
 use rand_distr::Standard;
@@ -360,6 +360,154 @@ fn calc_tri(raw : [V3; 3]) -> TriCache {
 	ca_i: normal.cross(ca)
     }
 }
+
+/// A mesh consisting of triangles with a coordinate mapping
+pub struct CoordinateMesh<const N : usize> {
+    /// The function used to assign a material given the coordinates
+    pub material_fn : Arc<dyn Fn(V<N, f32>,) -> PointMaterial + Sync + Send>,
+    
+    /// The triangles of this mesh
+    /// Each triangle is specified in counterclockwise order
+    pub tris : Vec<[V3; 3]>,
+
+    /// The coordinates for each vertex of each triangle specified in `tris`
+    pub coords : Vec<[V<N, f32>; 3]>
+}
+
+struct CoordinateMeshCache<const N : usize> {
+    bounding_sphere : BoundingSphere,
+    tris : Vec<CoordTriCache<N>>
+}
+
+impl<const N : usize> Renderable for CoordinateMesh<N> {
+    fn raycast(&self, object : &SceneObject, ray : &Ray, flipped : bool) -> Option<RayHit> {
+	// Extract the transformed triangles and the bounding sphere from the cache
+	let cache : &CoordinateMeshCache<N> = object.cache.as_ref().unwrap().downcast_ref().unwrap();
+
+	let flip = if flipped { -1.0 } else { 1.0 };
+	
+	// Check whether the ray collides with the bounding sphere
+	let (_, l2) = point_ray(cache.bounding_sphere.pos, ray);
+	if l2 > cache.bounding_sphere.r2 {
+	    return None;
+        }
+
+	// Iterate over the triangles to find a hit
+	let mut best : Option<(V3, f32, V3, V<N, f32>)> = None;
+	for t in cache.tris.iter() {
+	    // Backface culling - can't see a triangle oriented the wrong way
+	    let dot = t.normal.dot(ray.direction) * flip;
+	    if dot < 0.0 {
+		// Perpendicular distance
+		let pdist = t.normal.dot(ray.origin - t.a) * flip;
+		if pdist > 0.0 {
+		    let dist = pdist / -dot;
+		    
+		    if let Some((_, distance, _, _)) = &best {
+			if *distance <= dist {
+			    // There is already a better hit
+			    continue;
+			}
+		    }
+		    
+		    let point = ray.origin + ray.direction * dist;
+		    
+		    // Now check whether this point is actually *inside* the triangle
+		    let ap = point - t.a;
+		    if t.ab_i.dot(ap) >= 0.0 {
+			let bp = point - t.b;
+			if t.bc_i.dot(bp) >= 0.0 {
+			    let cp = point - t.c;
+			    if t.ca_i.dot(cp) >= 0.0 {
+				// New best hit
+				// Calculate the coordinates
+				// Scale by (height from vertex) / (max height from vertex)
+				let p_a = (t.a_h + t.bc_i.dot(ap)) / t.a_h;
+				let p_b = (t.b_h + t.ca_i.dot(bp)) / t.b_h;
+				let p_c = (t.c_h + t.ab_i.dot(cp)) / t.c_h;
+				
+				let coordinates = (t.a_c * p_a + t.b_c * p_b  + t.c_c * p_c)
+				    * (1.0 / (p_a + p_b + p_c));
+				best = Some((point, dist, t.normal, coordinates))
+			    }
+			}
+		    }
+		}
+	    }
+	}
+	match best {
+	    None => None,
+	    Some((position, distance, normal, coordinates)) =>
+		Some(RayHit {
+		    distance,
+		    material: (self.material_fn)(coordinates).into(),
+		    position,
+		    normal: normal * flip
+		})
+	}
+    }
+
+    fn calc_cache(&self, object : &SceneObject) -> Box<dyn Any + Send + Sync> {
+	let tris : Vec<CoordTriCache<N>> = self.tris.iter().zip(self.coords.iter()).map(
+	    |([a, b, c], coords)| calc_coord_tri([
+		object.transform.v3(a),
+		object.transform.v3(b),
+		object.transform.v3(c)
+	    ], coords)).collect();
+
+	let mid : V3 = tris.iter().map(|t| t.a + t.b + t.c)
+	    .fold(V3::zero(), |a, b| a + b) * (1.0 / (3 * tris.len()) as f32);
+	let r2 = tris.iter().map(
+	    |t| (t.a - mid).sq_magnitude().max((t.b - mid).sq_magnitude()).max((t.c - mid).sq_magnitude())
+	).fold(0.0f32, |a, b| a.max(b));
+	Box::new(CoordinateMeshCache {
+	    tris,
+	    bounding_sphere: BoundingSphere { pos: mid, r2 }
+	})
+    }
+}
+
+/// Triangle cache
+#[derive(Debug, Clone)]
+struct CoordTriCache<const N : usize> {
+    a : V3,
+    b : V3,
+    c : V3,
+    normal : V3,
+    ab_i : V3,
+    bc_i : V3,
+    ca_i : V3,
+    a_h : f32,
+    b_h : f32,
+    c_h : f32,
+    a_c : V<N, f32>,
+    b_c : V<N, f32>,
+    c_c : V<N, f32>
+}
+
+/// Calculate the cache for a single triangle
+fn calc_coord_tri<const N : usize>(raw : [V3; 3], coords : &[V<N, f32>; 3]) -> CoordTriCache<N> {
+    let [a, b, c] = raw;
+    let ab = b - a;
+    let bc = c - b;
+    let ca = a - c;
+    let normal = (-ab.cross(ca)).normalize();
+    let ab_i = normal.cross(ab).normalize();
+    let bc_i = normal.cross(bc).normalize();
+    let ca_i = normal.cross(ca).normalize();
+    CoordTriCache {
+	a, b, c,
+	normal,
+	ab_i, bc_i, ca_i,
+	a_h: bc_i.dot(ca),
+	b_h: ca_i.dot(ab),
+	c_h: ab_i.dot(bc),
+	a_c: coords[0],
+	b_c: coords[1],
+	c_c: coords[2]
+    }
+}
+
 
 /// Render-specific properties
 /// 
@@ -901,7 +1049,7 @@ impl Scene {
 ///
 /// Every three consecutive points form a triangle, with the order swapping between
 /// counterclockwise and clockwise after every triangle (starting counterclockwise)
-pub fn triangle_march(points : &Vec<V3>) -> Vec<[V3; 3]> {
+pub fn triangle_march<const N : usize>(points : &Vec<V<N, f32>>) -> Vec<[V<N, f32>; 3]> {
     let mut r = Vec::new();
     
     if points.len() > 2 {

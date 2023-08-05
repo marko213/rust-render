@@ -114,21 +114,19 @@ fn main() {
 	    color: mat![1.0, 1.0, 0.7] * 5.0
 	}]
     };
-    
-    let gray = Arc::new(PointMaterial {
-	color: mat![0.7, 0.7, 0.7],
-	emissive: Color::zero(),
-	roughness: 2.0,
-	diffuse: 1.0,
-	transmission: 0.0,
-	ior: 1.457.into()
-    });
 
     let plane_mesh = triangle_march(&vec![
 	mat![-0.5, 0.0,  0.5],
 	mat![ 0.5, 0.0,  0.5],
 	mat![-0.5, 0.0, -0.5],
 	mat![ 0.5, 0.0, -0.5],
+    ]);
+
+    let plane_uv = triangle_march(&vec![
+	mat![0.0, 1.0],
+	mat![1.0, 1.0],
+	mat![0.0, 0.0],
+	mat![1.0, 0.0]
     ]);
 
     let cube_mesh = triangle_march(&vec![
@@ -169,13 +167,35 @@ fn main() {
 	transmission: 0.0,
 	ior: Complex {re: 0.135, im: 3.985}
     });
+
+    const GROUND_SCALE : f32 = 100.0;
     
-    let ground = Arc::new(SimpleMesh {
-	material: gray,
-	tris: plane_mesh.clone()
+    let ground = Arc::new(CoordinateMesh {
+	material_fn: Arc::new(|coords| {
+	    // Checkerboard pattern
+	    let x = coords[0] * GROUND_SCALE % 2.0 < 1.0;
+	    let y = coords[1] * GROUND_SCALE % 2.0 < 1.0;
+	    let color = if x == y {
+		mat![0.8, 0.8, 0.8]
+	    } else {
+		mat![0.5, 0.5, 0.5]
+	    };
+
+	    PointMaterial {
+		color,
+		diffuse: 1.0,
+		emissive: Color::zero(),
+		roughness: 2.0,
+		transmission: 0.0,
+		ior: 1.457.into()
+	    }
+	}),
+	tris: plane_mesh.clone(),
+	coords: plane_uv
     });
+    
     scene.objects.push(SceneObject::new(
-	Transform::scale(mat![100.0, 1.0, 100.0]),
+	Transform::scale(mat![GROUND_SCALE, 1.0, GROUND_SCALE]),
 	ground
     ));
 
@@ -220,13 +240,13 @@ fn main() {
 	material: glass.clone(),
 	tris: prism_mesh
     });
-
+    
     scene.objects.push(SceneObject::new(
 	Transform::translation(mat![0.3, 0.7, -2.5]) *
 	    Transform::scale(mat![0.7, 0.7, 0.7]),
 	prism
     ));
-
+    
     let glass_cube = Arc::new(SimpleMesh {
 	material:glass.clone(),
 	tris: cube_mesh
