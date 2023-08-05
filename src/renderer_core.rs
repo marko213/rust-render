@@ -65,7 +65,9 @@ pub struct Ray {
     /// The number of bounces that have been made by rays up to this one
     bounces : i32,
     /// The number of splits that have been made by rays up to this one
-    splits: i32
+    splits: i32,
+    /// The (approximate) contribution of this ray to the final pixel
+    contribution : f32
 }
 
 /// The properties of a ray hitting a surface
@@ -579,7 +581,7 @@ struct Medium<'a, 'b> {
     previous : Option<&'b Medium<'a, 'b>>
 }
 
-const INTENSITY_EPSILON : f32 = 1e-6;
+const INTENSITY_EPSILON : f32 = 1e-10;
 const DISTANCE_EPSILON : f32 = 1e-6;
 
 /// Handle bounces / refractions at a point with the given normal
@@ -606,7 +608,8 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 	    origin: hit.position + direction * DISTANCE_EPSILON,
 	    direction,
 	    bounces: ray.bounces + 1,
-	    splits: ray.splits + if split_ray { 1 } else { 0 }
+	    splits: ray.splits + if split_ray { 1 } else { 0 },
+	    contribution: ray.contribution * p_reflect
 	}, medium);
 	
 	// Reflected through
@@ -629,7 +632,8 @@ fn handle_ray_with_normal(render_props : &RenderProperties, scene : &Scene, rand
 	    origin: hit.position + dir_refract * DISTANCE_EPSILON,
 	    direction: dir_refract,
 	    bounces: ray.bounces + 1,
-	    splits: ray.splits + if split_ray { 1 } else { 0 }
+	    splits: ray.splits + if split_ray { 1 } else { 0 },
+	    contribution: ray.contribution * p_transmit
 	}, next_medium);
 	color += transmission * p_transmit;
     }
@@ -708,6 +712,9 @@ fn render_ray_diffuse(render_props : &RenderProperties, scene : &Scene, randomne
 /// Render a ray in the scene
 fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mut Randomness, ray : Ray,
 	      medium : &Medium) -> Color {
+    if ray.contribution < INTENSITY_EPSILON {
+	return Color::zero();
+    }
     // Find the closest ray hit
     let mut best : Option<(RayHit, &SceneObject)> = None;
     for obj in scene.objects.iter() {
@@ -731,11 +738,12 @@ fn render_ray(render_props : &RenderProperties, scene : &Scene, randomness : &mu
 		if (inner_hit.distance - hit.distance).abs() < DISTANCE_EPSILON {
 		    // These surfaces seem to be squished together
 		    // Note that this can't currently handle exiting several mediums at once
+		    let prev_medium = medium.previous.unwrap();
 		    return render_ray_diffuse(render_props, scene, randomness, ray, hit.clone(),
 					      medium, &Medium {
 						  ior: hit.material.ior,
-						  object: medium.previous.unwrap().object,
-						  previous: medium.previous.unwrap().previous
+						  object: prev_medium.object,
+						  previous: prev_medium.previous
 					      }, Some(inner_hit));
 		} else if inner_hit.distance < hit.distance {
 		    // Boundary of the current medium
@@ -813,7 +821,8 @@ impl Camera {
 	    origin,
 	    direction,
 	    bounces: 0,
-	    splits: 0
+	    splits: 0,
+	    contribution: 1.0
 	}, &Medium {
 	    ior: scene.ior,
 	    object: None,
